@@ -19,12 +19,21 @@ int get_tid()
     return *id;
 }
 
+void notify_and_wait_for_start(ThreadParams *params)
+{
+    lock(params->threadsStartedMutexPtr, params->mutexLockTimeout);
+    ++(*params->threadsStartedPtr);
+    unlock(params->threadsStartedMutexPtr);
+    
+    waitUntilAndUnlock(params->canWorkPtr, params->canWorkCondPtr, params->canWorkMutexPtr, params->mutexLockTimeout);
+}
+
 void *producer_routine(void *args)
 {
     auto params = (ProducerThreadParams *)args;
     get_tid();
-
-    waitUntilAndUnlock(params->canWorkPtr, params->canWorkCondPtr, params->canWorkMutexPtr, params->mutexLockTimeout);
+    
+    notify_and_wait_for_start(params);
 
     std::string tmp;
     std::getline(std::cin, tmp);
@@ -61,12 +70,8 @@ void *consumer_routine(void *args)
 {
     auto params = (ConsumerThreadParams *)args;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, nullptr);
-
-    lock(params->threadsStartedMutexPtr, params->mutexLockTimeout);
-    ++(*params->threadsStartedPtr);
-    unlock(params->threadsStartedMutexPtr);
-
-    waitUntilAndUnlock(params->canWorkPtr, params->canWorkCondPtr, params->canWorkMutexPtr, params->mutexLockTimeout);
+    
+    notify_and_wait_for_start(params);
 
     long sum = 0;
     auto shouldBreak = false;
@@ -123,8 +128,8 @@ void *consumer_interruptor_routine(void *args)
 {
     auto params = (InterruptorThreadParams *)args;
     get_tid();
-
-    waitUntilAndUnlock(params->canWorkPtr, params->canWorkCondPtr, params->canWorkMutexPtr, params->mutexLockTimeout);
+    
+    notify_and_wait_for_start(params);
 
     while (true)
     {
@@ -141,13 +146,34 @@ void *consumer_interruptor_routine(void *args)
     }
 }
 
-void start_threads(ThreadParams *params)
+void wait_threads_init(ThreadParams *params, int count)
+{
+    for (;;)
+    {
+        lock(params->threadsStartedMutexPtr, params->mutexLockTimeout);
+        auto started = *params->threadsStartedPtr;
+        unlock(params->threadsStartedMutexPtr);
+        if (started == count)
+        {
+            break;
+        }
+    }
+}
+
+void start_thread(ThreadParams *params)
 {
     auto absTime = getAbsTime(params->mutexLockTimeout);
     executeAndCheckReturnCode(pthread_mutex_timedlock, params->canWorkMutexPtr, (const timespec *)&absTime);
     *(params->canWorkPtr) = true;
     executeAndCheckReturnCode(pthread_mutex_unlock, params->canWorkMutexPtr);
     executeAndCheckReturnCode(pthread_cond_broadcast, params->canWorkCondPtr);
+}
+
+void stop_thread(ThreadParams *params)
+{
+    lock(params->canWorkMutexPtr, params->mutexLockTimeout);
+    *(params->canWorkPtr) = false;
+    unlock(params->canWorkMutexPtr);
 }
 
 int run_threads(int count, long sleepMs, bool isDebugEnabled)
@@ -190,33 +216,20 @@ int run_threads(int count, long sleepMs, bool isDebugEnabled)
         create(&consumers[i], consumer_routine, (void *)&consumersParams);
     }
 
-    for (;;)
-    {
-        lock(consumersParams.threadsStartedMutexPtr, timeout);
-        auto started = *consumersParams.threadsStartedPtr;
-        unlock(consumersParams.threadsStartedMutexPtr);
-        if (started == count)
-        {
-            break;
-        }
-    }
+    wait_threads_init(&interruptorParams, 1);
+    wait_threads_init(&producerParams, 1);
+    wait_threads_init(&consumersParams, count);
 
-    start_threads(&interruptorParams);
-    start_threads(&producerParams);
-    start_threads(&consumersParams);
+    start_thread(&interruptorParams);
+    start_thread(&producerParams);
+    start_thread(&consumersParams);
 
     join(producer);
 
-    lock(interruptorParams.canWorkMutexPtr, timeout);
-    *(interruptorParams.canWorkPtr) = false;
-    unlock(interruptorParams.canWorkMutexPtr);
-
+    stop_thread(&interruptorParams);
     join(interruptor);
-
-    lock(consumersParams.canWorkMutexPtr, timeout);
-    *(consumersParams.canWorkPtr) = false;
-    unlock(consumersParams.canWorkMutexPtr);
-
+    
+    stop_thread(&consumersParams);
     waitUntil(consumersParams.consumed, consumersParams.consumedCondPtr, consumersParams.consumedMutexPtr, consumersParams.mutexLockTimeout);
     signalAll(consumersParams.consumedCondPtr);
     unlock(consumersParams.consumedMutexPtr);

@@ -5,6 +5,8 @@ class ThreadParams
 {
 public:
     int mutexLockTimeout;
+    pthread_mutex_t *threadsStartedMutexPtr;
+    int *threadsStartedPtr;
     bool *canWorkPtr;
     pthread_cond_t *canWorkCondPtr;
     pthread_mutex_t *canWorkMutexPtr;
@@ -15,13 +17,17 @@ protected:
         canWorkPtr = new bool(false);
         canWorkCondPtr = new pthread_cond_t();
         canWorkMutexPtr = new pthread_mutex_t();
+        threadsStartedMutexPtr = new pthread_mutex_t();
+        threadsStartedPtr = new int(0);
 
         init(canWorkCondPtr);
         init(canWorkMutexPtr);
+        init(threadsStartedMutexPtr);
     }
 
     ~ThreadParams()
     {
+        destroy(threadsStartedMutexPtr);
         destroy(canWorkMutexPtr);
         destroy(canWorkCondPtr);
 
@@ -36,8 +42,6 @@ class ConsumerThreadParams : public ThreadParams
 public:
     const long sleepMilliseconds;
     const bool isDebugEnabled;
-    pthread_mutex_t *threadsStartedMutexPtr;
-    int *threadsStartedPtr;
     const long *sharedVariablePtr;
     bool *consumed;
     pthread_cond_t *consumedCondPtr;
@@ -75,11 +79,6 @@ public:
         {
             throw std::invalid_argument(nameof(consumedMutexPtr));
         }
-
-        threadsStartedMutexPtr = new pthread_mutex_t();
-        threadsStartedPtr = new int(0);
-
-        init(threadsStartedMutexPtr);
     }
 
     ~ConsumerThreadParams()
