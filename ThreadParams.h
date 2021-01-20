@@ -5,35 +5,32 @@ class ThreadParams
 {
 public:
     int mutexLockTimeout;
-    pthread_mutex_t *threadsStartedMutexPtr;
-    int *threadsStartedPtr;
-    bool *canWorkPtr;
-    pthread_cond_t *canWorkCondPtr;
-    pthread_mutex_t *canWorkMutexPtr;
+    pthread_barrier_t *threadsStartedBarrier;
+    pthread_barrier_t *canWorkBarrier;
+    bool shouldBreak;
+    pthread_mutex_t *shouldBreakMutex;
 
 protected:
-    ThreadParams(const int mutexLockTimeout) : mutexLockTimeout(mutexLockTimeout)
+    ThreadParams(int mutexLockTimeout, unsigned threadsCount) : mutexLockTimeout(mutexLockTimeout),
+                                                                threadsStartedBarrier(new pthread_barrier_t()),
+                                                                canWorkBarrier(new pthread_barrier_t()),
+                                                                shouldBreak(false),
+                                                                shouldBreakMutex(new pthread_mutex_t())
     {
-        canWorkPtr = new bool(false);
-        canWorkCondPtr = new pthread_cond_t();
-        canWorkMutexPtr = new pthread_mutex_t();
-        threadsStartedMutexPtr = new pthread_mutex_t();
-        threadsStartedPtr = new int(0);
-
-        init(canWorkCondPtr);
-        init(canWorkMutexPtr);
-        init(threadsStartedMutexPtr);
+        init(threadsStartedBarrier, threadsCount + 1);
+        init(canWorkBarrier, threadsCount + 1);
+        init(shouldBreakMutex);
     }
 
     ~ThreadParams()
     {
-        destroy(threadsStartedMutexPtr);
-        destroy(canWorkMutexPtr);
-        destroy(canWorkCondPtr);
+        destroy(shouldBreakMutex);
+        destroy(canWorkBarrier);
+        destroy(threadsStartedBarrier);
 
-        delete canWorkMutexPtr;
-        delete canWorkCondPtr;
-        delete canWorkPtr;
+        delete shouldBreakMutex;
+        delete canWorkBarrier;
+        delete threadsStartedBarrier;
     }
 };
 
@@ -42,84 +39,77 @@ class ConsumerThreadParams : public ThreadParams
 public:
     const long sleepMilliseconds;
     const bool isDebugEnabled;
-    const long *sharedVariablePtr;
+    const long *sharedVariable;
     bool *consumed;
-    pthread_cond_t *consumedCondPtr;
-    pthread_mutex_t *consumedMutexPtr;
+    pthread_cond_t *consumedCond;
+    pthread_mutex_t *consumedMutex;
 
     ConsumerThreadParams(
-        const int mutexLockTimeout,
+        int mutexLockTimeout,
+        int threadsCount,
         long sleepMilliseconds,
         bool isDebugEnabled,
-        const long *sharedVariablePtr,
+        const long *sharedVariable,
         bool *consumed,
-        pthread_cond_t *consumedCondPtr,
-        pthread_mutex_t *consumedMutexPtr) : ThreadParams(mutexLockTimeout),
-                                             sleepMilliseconds(sleepMilliseconds),
-                                             isDebugEnabled(isDebugEnabled),
-                                             sharedVariablePtr(sharedVariablePtr),
-                                             consumed(consumed),
-                                             consumedCondPtr(consumedCondPtr),
-                                             consumedMutexPtr(consumedMutexPtr)
-
+        pthread_cond_t *consumedCond,
+        pthread_mutex_t *consumedMutex) : ThreadParams(mutexLockTimeout, threadsCount),
+                                          sleepMilliseconds(sleepMilliseconds),
+                                          isDebugEnabled(isDebugEnabled),
+                                          sharedVariable(sharedVariable),
+                                          consumed(consumed),
+                                          consumedCond(consumedCond),
+                                          consumedMutex(consumedMutex)
     {
         if (sleepMilliseconds < 0)
         {
             throw std::invalid_argument(nameof(sleepMilliseconds));
         }
-        if (sharedVariablePtr == nullptr)
+        if (sharedVariable == nullptr)
         {
-            throw std::invalid_argument(nameof(sharedVariablePtr));
+            throw std::invalid_argument(nameof(sharedVariable));
         }
-        if (consumedCondPtr == nullptr)
+        if (consumedCond == nullptr)
         {
-            throw std::invalid_argument(nameof(consumedCondPtr));
+            throw std::invalid_argument(nameof(consumedCond));
         }
-        if (consumedMutexPtr == nullptr)
+        if (consumedMutex == nullptr)
         {
-            throw std::invalid_argument(nameof(consumedMutexPtr));
+            throw std::invalid_argument(nameof(consumedMutex));
         }
-    }
-
-    ~ConsumerThreadParams()
-    {
-        destroy(threadsStartedMutexPtr);    
-
-        delete threadsStartedPtr;
-        delete threadsStartedMutexPtr;
     }
 };
 
 class ProducerThreadParams : public ThreadParams
 {
 public:
-    long *sharedVariablePtr;
-    bool *consumedPtr;
-    pthread_cond_t *consumedCondPtr;
-    pthread_mutex_t *consumedMutexPtr;
+    long *sharedVariable;
+    bool *consumed;
+    pthread_cond_t *consumedCond;
+    pthread_mutex_t *consumedMutex;
 
     ProducerThreadParams(
-        const int mutexLockTimeout,
-        long *sharedVariablePtr,
-        bool *consumedPtr,
-        pthread_cond_t *consumedCondPtr,
-        pthread_mutex_t *consumedMutexPtr) : ThreadParams(mutexLockTimeout),
-                                             sharedVariablePtr(sharedVariablePtr),
-                                             consumedPtr(consumedPtr),
-                                             consumedCondPtr(consumedCondPtr),
-                                             consumedMutexPtr(consumedMutexPtr)
+        int mutexLockTimeout,
+        int threadsCount,
+        long *sharedVariable,
+        bool *consumed,
+        pthread_cond_t *consumedCond,
+        pthread_mutex_t *consumedMutex) : ThreadParams(mutexLockTimeout, threadsCount),
+                                          sharedVariable(sharedVariable),
+                                          consumed(consumed),
+                                          consumedCond(consumedCond),
+                                          consumedMutex(consumedMutex)
     {
-        if (sharedVariablePtr == nullptr)
+        if (sharedVariable == nullptr)
         {
-            throw std::invalid_argument(nameof(sharedVariablePtr));
+            throw std::invalid_argument(nameof(sharedVariable));
         }
-        if (consumedCondPtr == nullptr)
+        if (consumedCond == nullptr)
         {
-            throw std::invalid_argument(nameof(consumedCondPtr));
+            throw std::invalid_argument(nameof(consumedCond));
         }
-        if (consumedMutexPtr == nullptr)
+        if (consumedMutex == nullptr)
         {
-            throw std::invalid_argument(nameof(consumedMutexPtr));
+            throw std::invalid_argument(nameof(consumedMutex));
         }
     }
 };
@@ -132,10 +122,11 @@ public:
 
     InterruptorThreadParams(
         const int mutexLockTimeout,
+        int thisThreadsCount,
         size_t threadsCount,
-        const pthread_t *threads) : ThreadParams(mutexLockTimeout),
-                                    threadsCount(threadsCount),
-                                    threads(threads)
+        const pthread_t threads[]) : ThreadParams(mutexLockTimeout, thisThreadsCount),
+                                     threadsCount(threadsCount),
+                                     threads(threads)
     {
         if (threadsCount <= 0)
         {
@@ -143,7 +134,7 @@ public:
         }
         if (threads == nullptr)
         {
-            throw std::invalid_argument(nameof(sharedVariablePtr));
+            throw std::invalid_argument(nameof(threads));
         }
     }
 };
